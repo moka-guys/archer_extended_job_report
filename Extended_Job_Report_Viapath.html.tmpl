@@ -1,0 +1,326 @@
+{% load bleach_tags external_sources reporting staticfiles humanize utils %}
+<html>
+    <head>
+        <style type="text/css">
+            {% include "reporting/includes/reports/pdf_styles.html" %}
+        </style>
+        <meta name="report_type" content="job"/>
+        <meta name="name" content="Extended Job Report"/>
+        <meta name="assay_types" content="all"/>
+        <meta name="save_to_file" content="extended_job_report.pdf"/>
+    </head>
+    <body>
+        {% rest_call rest_api:job_overview job_id=job_id rest_config=rest_config as job %}
+        {% rest_call rest_api:job_read_stats job_id=job_id rest_config=rest_config as full_job_stats %}
+        {% for sample in job.samples %}
+            {% rest_call rest_api:sample_overview job_id=job_id sample_id=sample.id rest_config=rest_config as sample_dets %}
+            {% rest_call rest_api:sample_read_stats job_id=job_id sample_id=sample.id rest_config=rest_config as sample_reads %}
+
+            {% dict_assign sample_details sample.id sample_dets %}
+            {% dict_assign sample_read_stats sample.id sample_reads %}
+        {% endfor %}
+        <img src="{% static '/images/archerdx-logo-R.png' %}" style="margin-top:100px; float:center"/>
+
+        <div id="ext_job_rpt_front_page">
+            <div style="padding-left: 200px;"><span style="font-size:32px;">Quality Report</span></div>
+            <br/><br/><br/>
+            <table style="font-size:20px; margin-left:50px;">
+                <tr style="padding-bottom:10px;">
+                    <td width="25%"><b>Job:</b></td>
+                    <td width="75%">[{{job_id}}] - {{job.name|break_words:40}}</td>
+                </tr>
+                <tr>
+                    <td width="40%"><b>Pipeline Report Created:</b></td>
+                    <td width="60%">{% now "d/m/Y" %}</td>
+                </tr>
+            </table>
+
+            <div style="margin-left: 100px; margin-top: 250px;">
+                <table style="font-size:14px;">
+                    <tr>
+                        <td style="width:40%">Report for Pipeline Created:</td>
+                        <td style="width:60%">{{ job.job_db_record.complete_time|to_datetime|date:"d/m/Y" }}</td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%">Gene Panel:</td>
+                        <td style="width:60%">{{ job.target_region_name }}</td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%" style="width:30%">Analysis Type:</td>
+                        <td style="width:60%" style="width:70%">{{job.description|bleach}}</td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%">Analysis Software Version:</td>
+                        <td style="width:60%">{{ job.job_db_record.analysis_version }}</td>
+                    </tr>
+                    <tr>
+                        <td style="width:40%">Number of Samples:</td>
+                        <td style="width:60%">{{ job.samples|length }}</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+
+        <div><pdf:nextpage /></div>
+
+        <h4>1.0 Raw Reads Quality</h4>
+        {% if job.settings.SAMPLE_QC == "1" %}
+            <span>This section reviews the quality of the raw reads. For each sample the following plots are generated:</span>
+            <ul>
+                <li>Quality scores across all bases. Plot of the average base call quality score at each position in the read. Typically the base quality will show a slight decline towards the end of the read.</li>
+                <li>Quality score distribution over all sequences. Distribution and average quality per read across all sequences. Typically the average quality per read.</li>
+                <li>Distribution of sequence lengths over all sequences.</li>
+            </ul>
+            {% for sample in job.samples|dictsort:"id" %}
+                {% with sample_details|attribute_key:sample.id as this_sample_dets %}
+                    {% if not this_sample_dets.processed_with_errors %}
+                        <h2>Quality plots for sample {{sample.id}}</h2>
+                        <img style="display:block" src="/analysis/{{job.job_id}}/fastqc/{{this_sample_dets.name}}.molbar.trimmed.per_base_quality.png"/>
+                            <span>{{this_sample_dets.name}}.molbar.trimmed.per_base_quality.png</span>
+                        <img style="display:block" src="/analysis/{{job.job_id}}/fastqc/{{this_sample_dets.name}}.molbar.trimmed.per_sequence_quality.png" />
+                            <span>{{this_sample_dets.name}}.molbar.trimmed.per_sequence_quality.png</span>
+                        <img style="display:block" src="/analysis/{{job.job_id}}/fastqc/{{this_sample_dets.name}}.molbar.trimmed.sequence_length_distribution.png" />
+                            <span>{{this_sample_dets.name}}.molbar.trimmed.sequence_length_distribution.png</span>
+                        <div><pdf:nextpage /></div>
+                    {% endif %}
+               {% endwith %}
+            {% endfor %}
+        {% else %}
+            <h3>Sample QC was not performed. Skipping plots.</h3>
+            <br><br>
+        {% endif %}
+
+        {% for sample in job.samples|dictsort:"id" %}
+            {% with sample_details|attribute_key:sample.id as this_sample_dets %}
+                {% if this_sample_dets.processed_with_errors %}
+                    {% dict_assign errored_samples sample.id sample %}
+                {% endif %}
+            {% endwith %}
+        {% endfor %}
+
+        {% if errored_samples %}
+            <h2><i>Warning!</i> At least one sample completed in error and will be omitted from the report. Sample(s) in error:</h2>
+            {% for sample_id, error_sample in errored_samples.items %}
+                <span>[{{error_sample.id}}] {{error_sample.name}}{% if not forloop.last %}, {% endif %}</span>
+            {% endfor %}
+            <br><br>
+        {% endif %}
+
+        <h4>1.1 Dataset Overview</h4>
+        <h1>{{job.samples|length}} samples were sequenced resulting in a total of {{full_job_stats.read_stats.total_molbar_reads}} reads.</h1>
+        <br>
+        <span><b>Table 1.0: </b>Molecular Barcode Statistics</span>
+        <table class="data">
+            <tr class="header">
+                <th width="42%">Sample Name</th>
+                <th>Total Fragments</th>
+                <th>Fragments with Complete Adapter</th>
+                <th>Num. Reads After Trimming Adapters</th>
+            </tr>
+            {% for sample in job.samples|dictsort:"id" %}
+                {% with sample_details|attribute_key:sample.id as this_sample_dets %}
+                    {% if not this_sample_dets.processed_with_errors %}
+                        {% with sample_read_stats|attribute_key:sample.id as this_sample_read_stats %}
+                            <tr>
+                                <td with="42%">{{sample.name|break_words:20}}</td>
+                                <td>{{this_sample_read_stats.molbar_stats.total_molbar_reads}}</td>
+                                <td>{{this_sample_read_stats.molbar_stats.reads_with_correct_common}}</td>
+                                <td>{{this_sample_read_stats.molbar_stats.num_reads_after_trimming_adapters}}</td>
+                            </tr>
+                        {% endwith %}
+                    {% endif %}
+                {% endwith %}
+            {% endfor %}
+            <tr>
+                <td><b>Totals</b></td>
+                <td><b>{{full_job_stats.read_stats.total_molbar_reads}}</b></td>
+                <td><b>{{full_job_stats.read_stats.reads_with_correct_common}}</b></td>
+                <td><b>{{full_job_stats.read_stats.num_reads_after_trimming_adapters}}</b></td>
+            </tr>
+        </table>
+
+        <div><pdf:nextpage /></div>
+
+        <h4>1.2 Read Statistics</h4>
+
+        <span><b>Table 1.1: Raw Read Statistics</b> - Total number of fragments (read pairs) passing initial quality filter, before deduplication, total number and percentage of fragments that map to the genome (hg19) and the percentage of reads on-target.</span>
+        <table class="data">
+            <tr class="header">
+                <th width="40%">Sample Name</th>
+                <th width="20%">Total Fragments Passing Quality Filter</th>
+                <th width="15%">Mapped Fragments</th>
+                <th width="15%">Percent of Fragments Mapped</th>
+                <th width="15%">Percent On-Target</th>
+            </tr>
+            {% for sample in job.samples|dictsort:"id" %}
+                {% with sample_details|attribute_key:sample.id as this_sample_dets %}
+                    {% if not this_sample_dets.processed_with_errors %}
+                    <tr>
+                        {% with sample_read_stats|attribute_key:sample.id as this_sample_read_stats %}
+                            {% for read_stats in this_sample_read_stats.read_stat_types %}
+                                {% if read_stats.read_type == "All Fragments" %}
+                                    <td width="40%">{{sample.name|break_words:20}}</td>
+                                    <td width="20%">{{ read_stats.total_reads }}</td>
+                                    <td width="15%">{{ read_stats.mapped_num }}</td>
+                                    <td width="15%">{{ read_stats.mapped_percent|floatformat:"1" }} %</td>
+                                    <td width="15%">{{ read_stats.on_target_percent|floatformat:"1" }} %</td>
+                                {% endif %}
+                            {% endfor %}
+                        {% endwith %}
+                    </tr>
+                    {% endif %}
+                {% endwith %}
+            {% endfor %}
+            <tr>
+                <td width="40%"><b>Totals</b></td>
+                <td width="20%"><b>{{ full_job_stats.read_stats.all_passing_filter_reads }}</b></td>
+                <td width="15%"><b>{{ full_job_stats.read_stats.all_mapped_num }}</b></td>
+                <td width="15%"><b>{{ full_job_stats.read_stats.all_mapped_percent|floatformat:"1" }} %</b></td>
+                <td width="15%"><b>{{ full_job_stats.read_stats.all_on_target_percent|floatformat:"1" }} %</b></td>
+            </tr>
+        </table>
+
+        <br>
+
+        <span><b>Table 1.2: Unique Read Statistics</b> - Total number of unique fragments (read pairs) after deduplication, total number and percentage of unique fragments that map to the genome (hg19) and the percentage of unique reads on-target.</span>
+        <table class="data">
+            <tr class="header">
+                <th width="40%">Sample Name</th>
+                <th>Total Unique Fragments</th>
+                <th>Percent Unique Fragments</th>
+                <th>Mapped Unique Fragments</th>
+                <th>Percent of Unique Fragments Mapped</th>
+                <th>Percent Unique On-Target</th>
+            </tr>
+            {% for sample in job.samples|dictsort:"id" %}
+                {% with sample_details|attribute_key:sample.id as this_sample_dets %}
+                    {% if not this_sample_dets.processed_with_errors %}
+                    <tr>
+                        {% with sample_read_stats|attribute_key:sample.id as this_sample_read_stats %}
+                            {% for read_stats in this_sample_read_stats.read_stat_types %}
+                                {% if read_stats.read_type == "Unique Fragments" %}
+                                    <td width="40%">{{sample.name|break_words:20}}</td>
+                                    <td>{{ read_stats.total_reads }}</td>
+                                    <td>{{ read_stats.reads_percent|floatformat:"1" }} %</td>
+                                    <td>{{ read_stats.mapped_num }}</td>
+                                    <td>{{ read_stats.mapped_percent|floatformat:"1" }} %</td>
+                                    <td>{{ read_stats.on_target_percent|floatformat:"1" }} %</td>
+                                {% endif %}
+                            {% endfor %}
+                        {% endwith %}
+                    </tr>
+                    {% endif %}
+                {% endwith %}
+            {% endfor %}
+            <tr>
+                <td width="40%"><b>Totals</b></td>
+                <td><b>{{ full_job_stats.read_stats.unique_passing_filter_reads }}</b></td>
+                <td><b>{{ full_job_stats.read_stats.unique_passing_filter_percent|floatformat:"1" }} %</b></td>
+                <td><b>{{ full_job_stats.read_stats.unique_mapped_num }}</b></td>
+                <td><b>{{ full_job_stats.read_stats.unique_mapped_percent|floatformat:"1" }} %</b></td>
+                <td><b>{{ full_job_stats.read_stats.unique_on_target_percent|floatformat:"1" }} %</b></td>
+            </tr>
+        </table>
+
+        <div><pdf:nextpage /></div>
+        <h4>1.3 RNA and DNA Statistics</h4>
+        <span>In an RNA-seq experiment, there can be a proportion of reads originating from DNA molecules. For instance,
+            using total nucleic acid (TNA) as input material will result in both RNA and DNA molecules being captured by
+            the FusionPlex® Assay. This can aid in identification in genomic variants, in the case of degradation of
+            the RNA molecules.
+            <br>Additionally, DNA molecules are known to be more stable than RNA molecules. Therefore, for highly
+            degraded samples, the DNA to RNA ratio is expected to be higher than samples of higher quality. This metric
+             can provide insights into the quality status of each sample and the feasibility of gene expression analysis.
+             Samples with low amounts of amplifiable RNA provide little insights into the expression of genes targeted
+            within the panel. Ambiguous reads defined as reads that are fully contained within an exon, where the
+            originating molecule cannot be discerned. Table 1.3 shows the relative abundance of RNA and DNA fragments
+            for each sample.
+        </span>
+        <br><br>
+        <span><b>Table 1.3: </b>Molecule Type</span>
+        <table class="data">
+            <tr class="header">
+                <th width="40%">Sample Name</th>
+                <th>DNA Reads</th>
+                <th>DNA Mean Fragment Length</th>
+                <th>RNA Reads</th>
+                <th>RNA Mean Fragment Length</th>
+                <th>Ambiguous Reads</th>
+            </tr>
+            {% for sample in job.samples|dictsort:"id" %}
+                {% with sample_details|attribute_key:sample.id as this_sample_dets %}
+                    {% if not this_sample_dets.processed_with_errors %}
+                    <tr>
+                        {% with sample_read_stats|attribute_key:sample.id as this_sample_read_stats %}
+                            {% for mol_stats in this_sample_read_stats.total_stats %}
+                                {% if mol_stats.frag_type == "All Fragments" %}
+                                    <td width="40%">{{ sample.name|break_words:20 }}</td>
+                                    <td>{{ mol_stats.dna_reads_percent|floatformat:"1" }} %</td>
+                                    <td>{{ this_sample_read_stats.fragment_means_and_medians.dna_mean_length|floatformat:"1" }}</td>
+                                    <td>{{ mol_stats.rna_reads_percent|floatformat:"1" }} %</td>
+                                    <td>{{ this_sample_read_stats.fragment_means_and_medians.rna_mean_length|floatformat:"1" }}</td>
+                                    <td>{{ mol_stats.ambiguous_reads_percent|floatformat:"1" }} %</td>
+                                {% endif %}
+                            {% endfor %}
+                        {% endwith %}
+                    </tr>
+                    {% endif %}
+                {% endwith %}
+            {% endfor %}
+        </table>
+
+        <div><pdf:nextpage /></div>
+        <h4>1.4 QC Statistics</h4>
+        <span>Average unique DNA start sites per GSP2 is defined as the minimum required average number of unique starts
+            sites found across all GSP2’s in the panel. The unique start sites are only those from reads that have been
+            identified as DNA, and do not include RNA reads. The default QC threshold is 50 for VariantPlex® assays.
+            <br>Average Unique RNA Start Sites per GSP2 is defined as the minimum required average number of unique
+            starts sites (note, NOT unique fragments) found across the control GSP2’s in the panel. The unique start
+            sites are only those from reads that have been identified as RNA reads. The default QC threshold is 10 for
+            FusionPlex assays.
+        </span>
+        <br><br>
+        <span><b>Table 1.4: </b>QC Statistics</span>
+        <table class="data">
+            <tr class="header">
+                <th width="40%">Sample Name</th>
+                <th>Avg. Unique DNA Start Sites per GSP2</th>
+                <th>Variation QC Filter</th>
+                <th>Avg. Unique RNA Start Sites per GSP2 Control</th>
+                <th>Fusion QC Filter</th>
+            </tr>
+            {% for sample in job.samples|dictsort:"id" %}
+                {% with sample_details|attribute_key:sample.id as this_sample_dets %}
+                    {% if not sample_dets.processed_with_errors %}
+                    <tr>
+                        {% with sample_read_stats|attribute_key:sample.id as this_sample_read_stats %}
+                            <td width="40%">{{ sample.name|break_words:20 }}</td>
+                            <td>{{ this_sample_read_stats.qc_stats.avg_unique_dna_ambig_ss_per_gsp2 }}</td>
+                            <td>
+                            {% for qc_type in this_sample_dets.results.qc.details %}
+                                {% if qc_type.name == "variations" %}
+                                    {{ qc_type.value|default:"Not Set" }}
+                                {% endif %}
+                            {% endfor %}
+                            </td>
+                            <td>{{ this_sample_read_stats.qc_stats.avg_unique_rna_start_sites_per_gsp2_control }}</td>
+                            <td>
+                            {% for qc_type in this_sample_dets.results.qc.details %}
+                                {% if qc_type.name == "fusion" %}
+                                    {{ qc_type.value|default:"Not Set" }}
+                                {% endif %}
+                            {% endfor %}
+                            </td>
+                        {% endwith %}
+                    </tr>
+                    {% endif %}
+                {% endwith %}
+            {% endfor %}
+        </table>
+        <div id="footerContent" class="section" style="float:right">
+            {%block page_foot%}
+                Page <pdf:pagenumber> of <pdf:pagecount>
+            {%endblock%}
+        </div>
+    </body>
+</html></th>
